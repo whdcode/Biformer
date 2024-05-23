@@ -1,0 +1,266 @@
+1、acc94.10%, auc97.72%
+
+train:
+    epoch = 140
+            patience = 15
+            batch_size = 8
+            model = FusionNet()
+            model.to(device)
+            lr = 0.0001
+            optimizer = torch.optim.Adam(model.parameters(), lr=lr)  # weight_decay=1e-4
+            criterion = torch_functional.binary_cross_entropy_with_logits
+            # criterion = SmoothBCEWithLogitsLoss(smoothing=0.05)
+            scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[65], gamma=0.5)  # or [40, 65]
+
+model:
+        if topk is None:
+            topk = [2, 2, 1]
+        if n_win is None:
+            n_win = [4, 2, 1]
+        self.n_win = n_win
+        self.topk = topk
+        self.drop_path = drop_path
+        if num_heads is None:
+            num_heads = [4, 8, 32]
+        self.num_heads = num_heads
+        if dim is None:
+            dim = [1, 64, 128, 576]
+        self.dim = dim
+        self.norm_layer = nn.BatchNorm3d
+
+        self.stem = nn.Sequential(nn.Conv3d(dim[0], dim[1], kernel_size=(4, 4, 4), stride=(4, 4, 4), padding=1),
+                                  self.norm_layer(dim[1]),
+                                  )
+         self.Pconvblock1 = MLPBlock(dim[1], 2, mlp_ratio=1, drop_path=self.drop_path, layer_scale_init_value=0, act_layer=nn.ReLU,
+                                    norm_layer=nn.BatchNorm3d, pconv_fw_type='split_cat')
+
+        self.Pconvblock2 = MLPBlock(dim[2], 2, mlp_ratio=1, drop_path=self.drop_path, layer_scale_init_value=0, act_layer=nn.ReLU,
+                                    norm_layer=nn.BatchNorm3d, pconv_fw_type='split_cat', double_input=True)
+
+        self.Pconvblock3 = MLPBlock(dim[3], 2, mlp_ratio=1, drop_path=self.drop_path, layer_scale_init_value=0, act_layer=nn.ReLU,
+                                    norm_layer=nn.BatchNorm3d, pconv_fw_type='split_cat', double_input=True)
+
+        self.Pconvblock4 = MLPBlock(dim[3], 2, mlp_ratio=1, drop_path=self.drop_path, layer_scale_init_value=0, act_layer=nn.ReLU,
+                                    norm_layer=nn.BatchNorm3d, pconv_fw_type='split_cat', double_input=True)
+
+        self.Pconvblock5 = MLPBlock(dim[3], 2, mlp_ratio=1, drop_path=self.drop_path, layer_scale_init_value=0, act_layer=nn.ReLU,
+                                    norm_layer=nn.BatchNorm3d, pconv_fw_type='split_cat', double_input=True)
+
+                                  ...
+    def forward(self, x: torch.Tensor):
+        x = self.stem(x)
+        # ---------------------------stage1-----------------------------
+        xc, xxc = self.Pconvblock1(x)
+        xb = self.biformerblock1(x, xxc)
+        # xc = self.sig(self.shortcut[0](xb)) * xc
+        xc = self.convdownsample_layers[0](xc)
+        xb = self.bifordownsample_layers[0](xb)
+
+        # ---------------------------stage2-----------------------------
+        xc, xxc = self.Pconvblock2(xc, xb)
+        xb = self.biformerblock2(xb, xxc)
+        # xc = self.sig(self.shortcut[1](xb)) * xc
+        xc = self.convdownsample_layers[1](xc)
+        xb = self.bifordownsample_layers[1](xb)
+        # ---------------------------stage3-----------------------------
+        xc, xxc = self.Pconvblock3(xc, xb)
+        xb = self.biformerblock3(xb, xxc)
+        # xc = self.sig(self.shortcut[2](xb)) * xc
+
+        xc, xxc = self.Pconvblock3(xc, xb)
+        xb = self.biformerblock3(xb, xxc)
+        # xc = self.sig(self.shortcut[2](xb)) * xc
+
+        xc, xxc = self.Pconvblock3(xc, xb)
+        xb = self.biformerblock3(xb, xxc)
+        # xc = self.sig(self.shortcut[2](xb)) * xc
+        #
+        out_conv = self.avgpool(xc).flatten(1)
+        out_bifor = self.pre_head_norm(xb).mean([2, 3, 4])
+
+        out = out_conv + out_bifor
+        out = self.classificatier(out)
+
+        return out
+
+2、在model文件中， AD任务达到95.05%， 在MCI任务取得80.66%（lr=0.00006）
+class FusionNet(nn.Module):
+    """
+    Stack several BiFormer Blocks
+    """
+
+    def __init__(self, n_win=None, topk=None,
+                 mlp_ratio=4., drop_path=0.1, side_dwconv=5, dim=None, num_heads=None):
+        super().__init__()
+        if topk is None:
+            topk = [2, 2, 1]
+        if n_win is None:
+            n_win = [4, 2, 1]
+        self.n_win = n_win
+        self.topk = topk
+        self.drop_path = drop_path
+        if num_heads is None:
+            num_heads = [4, 8, 32]
+        self.num_heads = num_heads
+        if dim is None:
+            dim = [1, 64, 128, 576]
+        self.dim = dim
+        self.norm_layer = nn.BatchNorm3d
+
+        self.stem = nn.Sequential(nn.Conv3d(dim[0], dim[1], kernel_size=(4, 4, 4), stride=(4, 4, 4), padding=1),
+                                  self.norm_layer(dim[1]),
+                                  )
+
+        self.convdownsample_layers = nn.ModuleList()
+        for i in range(2):
+            # patch merging: norm-conv
+            downsample_layer = nn.Sequential(
+                self.norm_layer(dim[i + 1]),
+                nn.Conv3d(dim[i + 1], dim[i + 2], kernel_size=(2, 2, 2), stride=(2, 2, 2)),
+            )
+            self.convdownsample_layers.append(downsample_layer)
+
+        self.bifordownsample_layers = nn.ModuleList()
+        for i in range(2):
+            # patch merging: norm-conv
+            downsample_layer = nn.Sequential(
+                self.norm_layer(dim[i + 1]),
+                nn.Conv3d(dim[i + 1], dim[i + 2], kernel_size=(2, 2, 2), stride=(2, 2, 2)),
+            )
+            self.bifordownsample_layers.append(downsample_layer)
+
+        self.biformerblock1 = BiFormerBlock(
+            dim=dim[1],
+            num_heads=self.num_heads[0],
+            n_win=self.n_win[0],
+            topk=self.topk[0],
+            mlp_ratio=mlp_ratio,
+            side_dwconv=side_dwconv,
+        )
+
+        self.biformerblock2 = BiFormerBlock(
+            dim=dim[2],
+            num_heads=self.num_heads[1],
+            n_win=self.n_win[1],
+            topk=self.topk[1],
+            mlp_ratio=mlp_ratio,
+            side_dwconv=side_dwconv,
+        )
+        self.biformerblock3 = BiFormerBlock(
+            dim=dim[3],
+            num_heads=self.num_heads[2],
+            n_win=self.n_win[2],
+            topk=self.topk[2],
+            mlp_ratio=mlp_ratio,
+            side_dwconv=side_dwconv,
+        )
+        self.biformerblock4 = BiFormerBlock(
+            dim=dim[3],
+            num_heads=self.num_heads[2],
+            n_win=self.n_win[2],
+            topk=self.topk[2],
+            mlp_ratio=mlp_ratio,
+            side_dwconv=side_dwconv,
+        )
+        self.biformerblock5 = BiFormerBlock(
+            dim=dim[3],
+            num_heads=self.num_heads[2],
+            n_win=self.n_win[2],
+            topk=self.topk[2],
+            mlp_ratio=mlp_ratio,
+            side_dwconv=side_dwconv,
+        )
+        self.Pconvblock = nn.ModuleList()
+        for i in range(5):
+            # patch merging: norm-conv
+            if i == 0:
+                pconvblock = MLPBlock(dim[i + 1], 4, mlp_ratio=2, drop_path=self.drop_path, layer_scale_init_value=0,
+                                      act_layer=nn.ReLU,
+                                      norm_layer=nn.BatchNorm3d, pconv_fw_type='split_cat')
+            elif i == 1:
+                pconvblock = MLPBlock(dim[i + 1], 4, mlp_ratio=2, drop_path=self.drop_path, layer_scale_init_value=0,
+                                      act_layer=nn.ReLU,
+                                      norm_layer=nn.BatchNorm3d, pconv_fw_type='split_cat', double_input=True)
+            else:
+                pconvblock = MLPBlock(dim[3], 4, mlp_ratio=2, drop_path=self.drop_path, layer_scale_init_value=0,
+                                      act_layer=nn.ReLU,
+                                      norm_layer=nn.BatchNorm3d, pconv_fw_type='split_cat', double_input=True)
+            self.Pconvblock.append(pconvblock)
+
+        self.shortcut = nn.ModuleList()
+        for i in range(5):
+            # patch merging: norm-conv
+            if i <= 1:
+                shortcut = nn.Sequential(nn.Conv3d(dim[i + 1], dim[i + 1], 1),
+                                         # nn.MaxPool3d(2),
+                                         LayerNorm3D(dim[i + 1]),
+                                         )
+            else:
+                shortcut = nn.Sequential(nn.Conv3d(dim[3], dim[3], 1),
+                                         # nn.MaxPool3d(2),
+                                         LayerNorm3D(dim[3]),
+                                         )
+            self.shortcut.append(shortcut)
+
+        self.SA = nn.ModuleList()
+
+        for _ in range(5):
+            sa = SpatialAttention()
+            self.SA.append(sa)
+
+
+        self.classificatier = nn.Sequential(nn.Linear(self.dim[-1], 1))
+        self.avgpool = nn.AdaptiveAvgPool3d(1)
+        self.pre_head_norm = LayerNorm3D(dim[-1])
+        self.conv_last = nn.Conv3d(dim[-1], dim[-1], 1)
+
+        self.sig = nn.Sigmoid()
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def forward(self, x: torch.Tensor):
+        x = self.stem(x)
+        # ---------------------------stage1-----------------------------
+        xc, xxc = self.Pconvblock[0](x)
+        xb = self.biformerblock1(x, xxc)
+        xc = self.SA[0](xb) * xc
+        xc = self.convdownsample_layers[0](xc)
+        xb = self.bifordownsample_layers[0](xb)
+
+        # ---------------------------stage2-----------------------------
+        xc, xxc = self.Pconvblock[1](xc, xb)
+        xb = self.biformerblock2(xb, xxc)
+        xc = self.SA[1](xb) * xc
+        xc = self.convdownsample_layers[1](xc)
+        xb = self.bifordownsample_layers[1](xb)
+        # ---------------------------stage3-----------------------------
+        xc, xxc = self.Pconvblock[2](xc, xb)
+        xb = self.biformerblock3(xb, xxc)
+        xc = self.SA[2](xb) * xc
+
+        xc, xxc = self.Pconvblock[3](xc, xb)
+        xb = self.biformerblock3(xb, xxc)
+        xc = self.SA[3](xb) * xc
+
+        xc, xxc = self.Pconvblock[4](xc, xb)
+        xb = self.biformerblock3(xb, xxc)
+        xc = self.SA[4](xb) * xc
+
+        out_conv = self.avgpool(xc).flatten(1)
+        out_bifor = self.pre_head_norm(xb).mean([2, 3, 4])
+
+        out = out_conv + out_bifor
+        out = self.classificatier(out)
+
+        return out
+
+    def extra_repr(self) -> str:
+        return f"dim={self.dim}, depth={self.depth}"

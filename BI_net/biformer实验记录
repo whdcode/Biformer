@@ -1,0 +1,239 @@
+
+                                #############ADVSHC#########f3#############
+1、
+初始模型，三层结构，达到92.28%
+    model = nchwBiFormerSTL(in_chans=1, num_classes=1,
+                            depth=[1, 1, 1],
+                            embed_dim=[64, 128, 576],
+                            mlp_ratios=[1, 1, 1],
+                            head_dim=16,
+                            norm_layer=nn.BatchNorm3d,
+                            ######## biformer specific ############
+                            n_wins=(7, 7, 7),
+                            topks=(1, 2, 8),
+                            side_dwconv=5,
+                            #######################################
+                            **kwargs)
+
+2、修改阶段3的深度为3，达到93.24%
+    model = nchwBiFormerSTL(in_chans=1, num_classes=1,
+                            depth=[1, 1, 3],
+                            embed_dim=[64, 128, 576],
+                            mlp_ratios=[1, 1, 1],
+                            head_dim=16,
+                            norm_layer=nn.BatchNorm3d,
+                            ######## biformer specific ############
+                            n_wins=(7, 7, 7),
+                            topks=(1, 2, 8),
+                            side_dwconv=5,
+                            #######################################
+                            **kwargs)
+
+3、在2基础上修改mlp_ratios = [2, 2, 2]， 效果下降  到89.15%
+
+ model = nchwBiFormerSTL(in_chans=1, num_classes=1,
+                            depth=[1, 1, 3],
+                            embed_dim=[64, 128, 576],
+                            mlp_ratios=[2, 2, 2],
+                            head_dim=16,
+                            norm_layer=nn.BatchNorm3d,
+                            ######## biformer specific ############
+                            n_wins=(7, 7, 7),
+                            topks=(1, 2, 8),
+                            side_dwconv=5,
+                            #######################################
+                            **kwargs)
+
+4、在2基础上改变深度depth=[1, 1, 3] = [1, 2, 3], 性能下降到85.85%
+
+ model = nchwBiFormerSTL(in_chans=1, num_classes=1,
+                            depth=[1, 2, 3],
+                            embed_dim=[64, 128, 576],
+                            mlp_ratios=[1, , ],
+                            head_dim=16,
+                            norm_layer=nn.BatchNorm3d,
+                            ######## biformer specific ############
+                            n_wins=(7, 7, 7),
+                            topks=(1, 2, 8),
+                            side_dwconv=5,
+                            #######################################
+                            **kwargs)
+5、在2基础上改变深度depth=[1, 1, 3] = [1, 2, 5]， 性能下降到87.34%，，改变深度depth=[1, 1, 3] = [1, 2, 4]，性能下降到89.98%
+
+6.在2基础上改变宽度 embed_dim=[64, 128, 576] -》[64, 192, 576]  性能下降到91.75%，， embed_dim=[64, 128, 576] -》[32, 128, 512]， 性能下降至0.8892    embed_dim=[64, 128, 576] -》64, 128, 256性能下降至0.9102
+
+7.在2基础上改变head_dims, 16 -> 32, 结果 下降至89.39%,
+
+8.在7的基础上mbed_dim=[64, 128, 576] -- 》 mbed_dim=[64, 192, 576]， acc下降为0.9127
+
+9.在基于2的基础上增加数据增强，acc - 》 92.68%
+
+self.transform = transforms.Compose([
+            xyz_rotate(-10, 10, rate=0.5),
+            flip(rate=0.5),
+            mask(rate=0.5, mask_nums=2, intersect=False),   #
+            # equa_hist()
+            RandomCrop3D((80, 80, 80), radio=0.4),
+            contrast(),
+        ])
+
+
+10,在2的基础上，无数据增强，增加dropath=0.15，acc=0.9386
+
+11、在以下的设定下， acc->94.57
+
+def biformer_stl_nchw(**kwargs):
+    model = nchwBiFormerSTL(in_chans=1, num_classes=1,
+                            depth=[1, 1, 3],  # 1, 1, 3
+                            embed_dim=[64, 128, 576],  # 64, 128, 576
+                            mlp_ratios=[1, 1, 1],
+                            head_dim=16,  # 16
+                            drop_path_rate=0.0,
+                            norm_layer=nn.BatchNorm3d,
+                            ######## biformer specific ############
+                            n_wins=(4, 2, 1),  # 7, 7, 7
+                            topks=(2, 2, 1),  # 1， 2， 8    Mci2 4. 16
+                            side_dwconv=5, #  5
+                            #######################################
+                            **kwargs)
+
+    return model
+
+   epoch = 100
+        patience = 15
+        batch_size = 8
+        model = biformer_stl_nchw()
+        model.to(device)
+        lr = 0.0001
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)  # weight_decay=1e-4
+        criterion = torch_functional.binary_cross_entropy_with_logits
+        # criterion = SmoothBCEWithLogitsLoss(smoothing=0.05)
+        scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[65], gamma=0.5)  # or [40, 65]
+
+
+                                #############MCI#########f3#############
+1、
+初始模型，三层结构，达到72.07%
+    model = nchwBiFormerSTL(in_chans=1, num_classes=1,
+                            depth=[1, 1, 1],
+                            embed_dim=[64, 128, 576],
+                            mlp_ratios=[1, 1, 1],
+                            head_dim=16,
+                            norm_layer=nn.BatchNorm3d,
+                            ######## biformer specific ############
+                            n_wins=(7, 7, 7),
+                            topks=(1, 2, 8),
+                            side_dwconv=5,
+                            #######################################
+                            **kwargs)
+
+
+2。基于2的基础下topks=(1, 2, 8) -》 （2， 4， 8）  acc - > 0.7090   topks=(1, 2, 8) -》 （1， 4， 16）
+
+3.在基于1的基础上增加数据增强，acc - 》 78.51%
+    self.transform = transforms.Compose([
+            xyz_rotate(-10, 10, rate=0.5),
+            flip(rate=0.5),
+            mask(rate=0.5, mask_nums=2, intersect=False),
+            # equa_hist()
+            RandomCrop3D((80, 80, 80), radio=0.4),
+            contrast(),
+        ])
+
+    model = nchwBiFormerSTL(in_chans=1, num_classes=1,
+                            depth=[1, 1, 3],        # 1, 1, 3
+                            embed_dim=[64, 128, 576],       # 64, 128, 576
+                            mlp_ratios=[1, 1, 1],
+                            head_dim=16,    # 16
+                            norm_layer=nn.BatchNorm3d,
+                            ######## biformer specific ############
+                            n_wins=(7, 7, 7),      # 7, 7, 7
+                            topks=(1, 2, 8),    # 1， 2， 8    Mci2 4. 16
+                            side_dwconv=5,
+                            #######################################
+                            **kwargs)
+
+    return model
+
+
+4、在3的基础上改变维度宽度，acc - 》 78.32%
+
+   def biformer_stl_nchw(**kwargs):
+    model = nchwBiFormerSTL(in_chans=1, num_classes=1,
+                            depth=[1, 1, 3],  # 1, 1, 3
+                            embed_dim=[32, 64, 320],  # 64, 128, 576
+                            mlp_ratios=[1, 1, 1],
+                            head_dim=8,  # 16
+                            drop_path_rate=0.0,
+                            norm_layer=nn.BatchNorm3d,
+                            ######## biformer specific ############
+                            n_wins=(7, 7, 7),  # 7, 7, 7
+                            topks=(1, 2, 8),  # 1， 2， 8    Mci2 4. 16
+                            side_dwconv=5, #  5
+                            #######################################
+                            **kwargs)
+
+5.在3的基础上，改变n_wins和topks, acc->78.71%
+def biformer_stl_nchw(**kwargs):
+    model = nchwBiFormerSTL(in_chans=1, num_classes=1,
+                            depth=[1, 1, 3],  # 1, 1, 3
+                            embed_dim=[64, 128, 576],  # 64, 128, 576
+                            mlp_ratios=[1, 1, 1],
+                            head_dim=16,  # 16
+                            drop_path_rate=0.0,
+                            norm_layer=nn.BatchNorm3d,
+                            ######## biformer specific ############
+                            n_wins=(4, 2, 1),  # 7, 7, 7
+                            topks=(2, 2, 1),  # 1， 2， 8    Mci2 4. 16
+                            side_dwconv=5, #  5
+                            #######################################
+                            **kwargs)
+
+    return model
+
+6.在3的基础上，改变初始学习率=0.0001, acc->80.08%
+def biformer_stl_nchw(**kwargs):
+    model = nchwBiFormerSTL(in_chans=1, num_classes=1,
+                            depth=[1, 1, 3],  # 1, 1, 3
+                            embed_dim=[64, 128, 576],  # 64, 128, 576
+                            mlp_ratios=[1, 1, 1],
+                            head_dim=16,  # 16
+                            drop_path_rate=0.0,
+                            norm_layer=nn.BatchNorm3d,
+                            ######## biformer specific ############
+                            n_wins=(4, 2, 1),  # 7, 7, 7
+                            topks=(2, 2, 1),  # 1， 2， 8    Mci2 4. 16
+                            side_dwconv=5, #  5
+                            #######################################
+                            **kwargs)
+
+    return model
+
+    epoch = 100
+        patience = 15
+        batch_size = 8
+        model = biformer_stl_nchw()
+        model.to(device)
+        lr = 0.0001
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)  # weight_decay=1e-4
+        criterion = torch_functional.binary_cross_entropy_with_logits
+        scheduler = lr_scheduler.MultiStepLR(optimizer, [75], gamma=0.5)  # or [40, 65]
+
+7、在6的基础上修改topk=321，acc->78.90%
+
+def biformer_stl_nchw(**kwargs):
+    model = nchwBiFormerSTL(in_chans=1, num_classes=1,
+                            depth=[1, 1, 3],  # 1, 1, 3
+                            embed_dim=[64, 128, 576],  # 64, 128, 576
+                            mlp_ratios=[1, 1, 1],
+                            head_dim=16,  # 16
+                            drop_path_rate=0.0,
+                            norm_layer=nn.BatchNorm3d,
+                            ######## biformer specific ############
+                            n_wins=(4, 2, 1),  # 7, 7, 7
+                            topks=(3, 2, 1),  # 1， 2， 8    Mci2 4. 16
+                            side_dwconv=5, #  5
+                            #######################################
+                            **kwargs)
+
+    return model
