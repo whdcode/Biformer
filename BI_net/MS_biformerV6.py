@@ -53,6 +53,7 @@ class LayerNorm3D(nn.Module):
             return x
 
 
+
 def _grid2seq(x: Tensor, region_size: Tuple[int], num_heads: int):
     """
     Args:
@@ -87,6 +88,20 @@ def _seq2grid(x: Tensor, region_h: int, region_w: int, region_d: int, region_siz
     return x
 
 
+class SmoothBCEWithLogitsLoss(nn.Module):
+    def __init__(self, smoothing=0.06):
+        super(SmoothBCEWithLogitsLoss, self).__init__()
+        self.smoothing = smoothing
+        self.bce_loss = nn.BCEWithLogitsLoss()
+
+    def forward(self, logits, targets):
+        # 平滑标签
+        targets = (1 - self. smoothing) * targets + self.smoothing / 2.0
+        # 计算二元交叉熵损失
+        loss = self.bce_loss(logits, targets)
+
+        return loss
+        
 class ECA_block(nn.Module):
     def __init__(self, channel, b=1, gamma=2):
         super(ECA_block, self).__init__()
