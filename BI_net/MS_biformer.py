@@ -59,7 +59,6 @@ class SpatialAttention_Up(nn.Module):
         out = torch.cat([avgout, maxout], 1)
         out = self.sigmoid(self.conv(out))
         out = F.interpolate(out, scale_factor=2, mode='trilinear', align_corners=True)
-
         return out
 
 
