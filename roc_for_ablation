@@ -1,0 +1,196 @@
+from matplotlib import pyplot as plt
+from numpy import interp
+from sklearn import metrics
+import os
+import numpy as np
+import pandas as pd
+import torch
+from torch.utils import data as torch_data
+from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_curve, auc
+from utils import calculate, _init_fn, ConfusionMatrix
+from Dataset import CustomDataset
+from ablation.convformer1_MCI import Convformer as CNVITE
+from ablation.convformer2 import Convformer as MPHACNVITE
+from ablation.convformer3 import Convformer as CMSFCNVITE
+from ablation.convformer4_MCI import Convformer as MPHACMSFCNVITE
+from ablation.MPHA_CMSF_CN_FC import convnext_tiny_3d as MPHACMSFCNFC
+from ablation.convformer5_MCI import Convformer as MPHACMSCNVITEMAC
+from ablation.VIT import vit_base_patch16_224_in21k
+
+
+# 定义一个函数用于绘制ROC曲线
+def plot_roc_curve(mtype_list, tpr_list, fpr_list, mean_fpr, tprs, aucs, Task_name, save_path_plot):
+    plt.figure()
+    for i, mtype in enumerate(mtype_list):
+        plt.plot(fpr_list[i], tpr_list[i],  lw=1.2, linestyle='-.', color='black',
+                 label='ROC %s (AUC = %0.4f)' % (mtype, aucs[i]))
+
+    plt.plot([0, 1], [0, 1], linestyle='--', lw=1.0, color='r',
+             label='Chance', alpha=.8)
+
+    mean_tpr = np.mean(tprs, axis=0)
+    mean_tpr[-1] = 1.0
+    mean_auc = auc(mean_fpr, mean_tpr)
+    std_auc = np.std(aucs)
+    plt.plot(mean_fpr, mean_tpr, color='b',
+             label=r'Mean ROC (AUC = %0.4f $\pm$ %0.4f)' % (mean_auc, std_auc),
+             lw=1, alpha=.5)
+    std_tpr = np.std(tprs, axis=0)
+    tprs_upper = np.minimum(mean_tpr + std_tpr, 1)
+    tprs_lower = np.maximum(mean_tpr - std_tpr, 0)
+    plt.fill_between(mean_fpr, tprs_lower, tprs_upper, color='grey', alpha=.2,
+                     label=r'$\pm$ 1 std. dev.')
+
+    plt.xlim([-0.02, 1.02])
+    plt.ylim([-0.02, 1.02])
+    plt.xticks(fontsize=12)
+    plt.yticks(fontsize=12)
+    plt.xlabel('False Positive Rate', fontsize=12)
+    plt.ylabel('True Positive Rate', fontsize=12)
+    # plt.title(f'Receiver Operating Characteristic Curve')
+    plt.rcParams.update({'font.size': 7})
+    plt.legend(loc="lower right")
+    plt.legend(fontsize='9')
+    plt.savefig("{}/{}ROC.png".format(save_path_plot, Task_name), dpi=300)
+    plt.show()
+
+
+def predict(modelfile, label_list, test_data_retriever, metric_save_path, model_, num):
+    print(modelfile)
+    data_loader = torch_data.DataLoader(
+        test_data_retriever,
+        batch_size=8,  # SIZE=4, 8
+        shuffle=False,
+        num_workers=0,
+        pin_memory=True,
+        worker_init_fn=_init_fn
+    )
+
+    model = model_
+    model.to(device)
+    confusion = ConfusionMatrix(num_classes=2, labels=label_list)
+    checkpoint = torch.load(modelfile, map_location='cuda:0')
+    model.load_state_dict(checkpoint["model_state_dict"], strict=False)
+    model.eval()
+
+    y_pred = []
+    targets_all = []
+    y_all = []
+
+    for e, batch in enumerate(data_loader, 1):
+        print(f"{e}/{len(data_loader)}", end="\r")
+        with torch.no_grad():
+            # tmp_pred = torch.sigmoid(model(batch[0].to(device))).cpu().numpy().squeeze()
+            if num != 2:  # num != 0 and num != 4
+                tmp_pred = torch.sigmoid(model(batch[0].to(device))[0]).cpu().numpy().squeeze()
+            else:
+                tmp_pred = torch.sigmoid(model(batch[0].to(device))).cpu().numpy().squeeze()
+            targets = batch[1]
+            targets_all.extend(targets.numpy().tolist())
+            targets.to(device)
+            if tmp_pred.size == 1:
+                y_pred.append(tmp_pred)
+            else:
+                y_pred.extend(tmp_pred.tolist())
+
+            y_all.extend(batch[1].tolist())
+
+    fpr_micro, tpr_micro, th = metrics.roc_curve(y_all, y_pred)
+    max_th = -1
+    max_yd = -1
+    for i in range(len(th)):
+        yd = tpr_micro[i] - fpr_micro[i]
+        if yd > max_yd:
+            max_yd = yd
+            max_th = th[i]
+    print(f'max_th: {max_th}')
+    max_th_save = os.path.join(metric_save_path, 'max_th')
+    with open(max_th_save, 'w') as f:
+        f.write(str(max_th))
+
+    y_preint = [1 if x > max_th else 0 for x in y_pred]
+    confusion.update(np.array(y_preint), np.array(targets_all, dtype=np.int32))
+    confusion.plot(metric_save_path)
+    confusion.summary()
+
+    rst_val = pd.DataFrame([calculate(y_pred, y_all, max_th)])
+    preddf = pd.DataFrame({"label": y_all, "y_pred": y_pred})
+    return preddf, rst_val, y_all, y_pred  # 返回每一个病人的预测分数的表格和预测指标AUC，ACC，Sep，sen
+
+
+def LoadModelWeights(weights_path):
+    # 加载保存的模型权重并保存在列表中
+    weights_list = []
+    for model_name in os.listdir(weights_path):
+        if model_name.endswith('.pth'):
+            model_path_final = os.path.join(weights_path, model_name)
+            weights_list.append(model_path_final)
+    return weights_list
+
+
+def PlotAndGenerate(weights_list, model_list, test_dataset_path, metric_save_path, roc_save_path):
+    tprs = []
+    aucs = []
+    mean_fpr = np.linspace(0, 1, 100)
+    mtype_list = []
+    fpr_list = []
+    tpr_list = []
+
+    for i, m in enumerate(weights_list):
+        name = m.split('.')[0].split('-')[0].split("\\")[-1].split("_")[-1]
+        model = model_list[i]
+        mtype_list.append(name)
+        test_data_retriever = CustomDataset(test_dataset_path, split='val')
+        preddf, rst_test, y_all, y_pred = predict(m, labels, test_data_retriever, metric_save_path, model, i)
+        fpr, tpr, thresholds = roc_curve(y_all, y_pred)
+        fpr_list.append(fpr)
+        tpr_list.append(tpr)
+        tprs.append(interp(mean_fpr, fpr, tpr))
+        tprs[-1][0] = 0.0
+        roc_auc = roc_auc_score(y_all, y_pred)
+        aucs.append(roc_auc)
+    # 绘ROC图
+    plot_roc_curve(mtype_list, tpr_list, fpr_list, mean_fpr, 
+                   tprs, aucs, all_name_roc, roc_save_path)
+
+
+if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(device)
+    Task_name = 'MCI'  # ADHC or MCI
+    roc_pictrue_name = "MVFP_Ablation"
+    all_name_roc = Task_name + '_' + roc_pictrue_name
+    root_path = 'D:\\translate\\MVFP-Net\\MVFP-Net\\comvfomer2_3\\result'
+    weights_path = f"D:\\translate\\MVFP-Net\\MVFP-Net\\comvfomer2_3\\ablation_weights_{Task_name}"
+    # 加载模型权重
+    weights_list = LoadModelWeights(weights_path)
+    # 测试集路径
+    test_dataset_path = ''
+    labels = []
+    if Task_name == 'ADHC':
+        test_dataset_path = f'D:\\translate\\MVFP-Net\\MVFP-Net\\comvfomer2_3\\datasets_fold3\\{Task_name}'
+        labels = ['HC', 'AD']  # 0 AND 1
+    else:
+        test_dataset_path = f'D:\\translate\\MVFP-Net\\MVFP-Net\\comvfomer2_3\\datasets_fold3\\{Task_name}'
+        labels = ['sMCI', 'pMCI']  # 0 AND 1
+    # 保存结果文件夹
+    result_save_path = os.path.join(root_path, "result")
+    os.makedirs(result_save_path, exist_ok=True)
+    roc_save_path = os.path.join(result_save_path, "ROC_curves")
+    os.makedirs(roc_save_path, exist_ok=True)
+    metric_save_path = os.path.join(result_save_path, "metric_conf")
+    os.makedirs(metric_save_path, exist_ok=True)
+
+    # 实例化模型
+    model0 = vit_base_patch16_224_in21k(num_classes=1, has_logits=False)
+    model1 = CNVITE()  # 1_CN+VITE-fold7epoch.pth  convformer1.py
+    model2 = CMSFCNVITE()  # convformer3.py
+    model3 = MPHACNVITE()  #
+    model4 = MPHACMSFCNFC()
+    model5 = MPHACMSFCNVITE()  # convformer4.py
+    model6 = MPHACMSCNVITEMAC()
+    model_list = [model1, model2, model4, model5, model6]
+
+    # 绘图
+    PlotAndGenerate(weights_list, model_list, test_dataset_path, metric_save_path, roc_save_path)
